@@ -1,0 +1,350 @@
+\documentclass[12pt, a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage[colorlinks=true, linkcolor=blue!60!black, urlcolor=blue!70!black]{hyperref}
+\usepackage{amsmath, amssymb}
+\usepackage{fancyhdr}
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small CS403 -- Distributed Systems}
+\fancyhead[R]{\small ZeroMQ Project Report}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+\usepackage{parskip}
+
+\begin{document}
+
+% ── Title Page ──────────────────────────────────────────────
+\begin{titlepage}
+    \centering
+    \vspace*{2cm}
+    {\Large\textsc{T.C.}\par}
+    \vspace{0.3cm}
+    {\Large\textsc{Sabanci University}\par}
+    {\large\textsc{Faculty of Engineering and Natural Sciences}\par}
+    \vspace{2cm}
+    {\LARGE\bfseries CS403 -- Distributed Systems\par}
+    \vspace{0.5cm}
+    {\Large\bfseries Project Report\par}
+    \vspace{1cm}
+    {\Large ZeroMQ-Based Distributed System\par}
+    \vspace{2cm}
+    \begin{tabular}{rl}
+        \textbf{Student:}    & Goksu Gultekin \\
+        \textbf{Instructor:} & Prof.\ Dr.\ ... \\
+        \textbf{Date:}       & \today \\
+    \end{tabular}
+    \vfill
+    {\small Spring 2025}
+\end{titlepage}
+
+\newpage
+
+% ═══════════════════════════════════════════════════════════
+\section{Introduction}
+
+This report describes a distributed system built in three progressive phases as part of the CS403 course. The system consists of three independent nodes (A, B, C) that communicate exclusively through message passing. There is no shared memory, no shared filesystem, and no global clock.
+
+\begin{itemize}
+    \item \textbf{Phase 1 -- Messaging with Vector Clocks:} ZeroMQ PUB/SUB communication with Vector Clocks for causal event ordering.
+    \item \textbf{Phase 2 -- Replicated Tree (CRDT):} Conflict-free replicated tree structure with Lamport timestamps, undo-redo convergence, and Kafka durability.
+    \item \textbf{Phase 3 -- Distributed File System:} Replicated file system with LWW conflict resolution, reusing Kafka modules from Phase~2.
+\end{itemize}
+
+\subsection{Technologies}
+
+\begin{itemize}
+    \item \textbf{ZeroMQ} -- Messaging library (PUB/SUB pattern).
+    \item \textbf{Apache Kafka} -- Event streaming platform for durability.
+    \item \textbf{Protocol Buffers} -- Binary serialization.
+    \item \textbf{Docker} -- Kafka and Zookeeper containers.
+    \item \textbf{Python 3.12+} -- Implementation language.
+\end{itemize}
+
+% ═══════════════════════════════════════════════════════════
+\section{System Architecture}
+
+\subsection{Overview}
+
+The project has a layered structure where each phase builds on the previous one. All nodes run as separate processes on the same machine, communicating over TCP via ZeroMQ. Kafka provides a persistent event log for crash recovery in Phases~2 and~3.
+
+\subsection{Port Assignments}
+
+\begin{table}[ht]
+\centering
+\begin{tabular}{lccc}
+\toprule
+\textbf{Node} & \textbf{Phase 1 (PUB)} & \textbf{Phase 2 (PUB)} & \textbf{Phase 3 (PUB)} \\
+\midrule
+Node A & 5550 & 6000 & 7000 \\
+Node B & 5551 & 6001 & 7001 \\
+Node C & 5552 & 6002 & 7002 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Kafka runs on port 9092 and Zookeeper on port 2181, both deployed via Docker Compose.
+
+% ═══════════════════════════════════════════════════════════
+\section{Phase 1 -- Messaging with Vector Clocks}
+
+\subsection{Objective}
+
+Demonstrate distributed communication using ZeroMQ PUB/SUB with \textbf{Vector Clocks} for tracking causal relationships between events. Each node generates events (send, receive, internal), and maintains a Vector Clock that is updated on every event.
+
+\subsection{Vector Clock}
+
+Each node maintains a dictionary mapping every node ID to a counter. The update rules are:
+
+\begin{itemize}
+    \item \textbf{Local event (send or internal):} Increment own entry by one.
+    \item \textbf{Receive event:} Take the pointwise maximum of the local and received clocks, then increment own entry:
+\end{itemize}
+
+\[
+VC_{\text{recv}}[i] = \max(VC_{\text{local}}[i],\; VC_{\text{msg}}[i]) \quad \forall\, i, \qquad \text{then}\quad VC_{\text{recv}}[\text{self}] \mathrel{+}= 1
+\]
+
+\subsection{Causal Ordering}
+
+Vector Clocks can determine three relationships between any two events:
+
+\begin{itemize}
+    \item \textbf{Happens-before ($a \to b$):} All entries of $VC(a)$ are $\le$ entries of $VC(b)$, and at least one is strictly less.
+    \item \textbf{Happens-after:} The reverse of happens-before.
+    \item \textbf{Concurrent:} Neither happens before the other. This means the events occurred independently on different nodes.
+\end{itemize}
+
+Unlike Lamport Clocks, Vector Clocks can detect concurrency. If $L(a) < L(b)$ with Lamport Clocks, $a$ may or may not have caused $b$. With Vector Clocks, $VC(a) < VC(b)$ guarantees $a$ causally preceded $b$.
+
+\subsection{Event Types}
+
+Each node supports three types of events:
+
+\begin{itemize}
+    \item \textbf{send:} Tick the clock, broadcast the message with the current Vector Clock to all peers via PUB/SUB.
+    \item \textbf{internal:} Tick the clock, record the event locally. No network communication.
+    \item \textbf{receive:} Merge the incoming Vector Clock with the local clock, then tick.
+\end{itemize}
+
+All events are recorded in a local event log with their Vector Clock snapshots.
+
+\subsection{Observations}
+
+\begin{itemize}
+    \item Messages can still be lost (slow-join problem in PUB/SUB).
+    \item No durability or crash recovery (no Kafka in this phase).
+    \item However, causal relationships between events are fully tracked.
+\end{itemize}
+
+These limitations motivate the improvements in Phase~2 (Kafka durability) and Phase~3 (practical file system).
+
+% ═══════════════════════════════════════════════════════════
+\section{Phase 2 -- Replicated Tree (CRDT)}
+
+\subsection{Objective}
+
+Introduce \textbf{eventual consistency} using a Conflict-free Replicated Data Type (CRDT). All nodes maintain a replicated tree and apply move operations independently. Conflicts are resolved deterministically via Last-Writer-Wins (LWW) with Lamport timestamps. Kafka provides durability.
+
+\subsection{Data Model}
+
+The tree is represented as a set of \texttt{(parent, meta, child)} triples. Each operation is a \texttt{Move} that relocates a child node under a new parent. Every move carries a Lamport timestamp \texttt{(counter, replica\_id)} for ordering.
+
+\subsection{Safety Checks}
+
+Before applying a move, two checks are performed:
+
+\begin{enumerate}
+    \item \textbf{Self-parent rejection:} A node cannot become its own parent.
+    \item \textbf{Cycle detection:} After tentatively applying the move, an ancestor traversal checks whether the child would become an ancestor of the new parent. If so, the move is rejected.
+\end{enumerate}
+
+\subsection{Undo-Redo for Convergence}
+
+When a new operation arrives with a timestamp older than some already-applied operations, the system reorders them using an undo-redo approach:
+
+\begin{enumerate}
+    \item Undo all log entries with timestamps newer than the incoming operation.
+    \item Apply the new operation to the resulting tree.
+    \item Redo the undone operations in timestamp order.
+\end{enumerate}
+
+This guarantees that all nodes converge to the same tree state regardless of message delivery order.
+
+\subsection{Kafka Integration}
+
+Every move operation is persisted to a Kafka topic before being broadcast. When a node crashes and restarts, it replays all events from Kafka to rebuild its local state.
+
+\subsection{Properties}
+
+\begin{itemize}
+    \item \textbf{Eventual consistency:} All nodes converge regardless of delivery order.
+    \item \textbf{Conflict-free:} LWW with Lamport timestamps resolves conflicts deterministically.
+    \item \textbf{Crash recovery:} Kafka replay rebuilds state after restart.
+    \item \textbf{Leaderless:} Any node can apply operations independently.
+\end{itemize}
+
+% ═══════════════════════════════════════════════════════════
+\section{Phase 3 -- Distributed File System}
+
+\subsection{Objective}
+
+Apply the distributed systems concepts from Phases~1 and~2 to a practical use case: a replicated file system. Each node maintains a local directory on disk. File operations are broadcast to all peers and persisted to Kafka.
+
+\subsection{Design}
+
+Each node has its own \texttt{storage\_dir/} directory. File metadata is tracked in memory with a Lamport timestamp and a deleted flag per file.
+
+Conflict resolution uses the same LWW approach as Phase~2: when two nodes modify the same file concurrently, the operation with the higher \texttt{(lamport, replica\_id)} tuple wins. The Kafka modules are directly reused from Phase~2.
+
+\subsection{Supported Operations}
+
+\begin{itemize}
+    \item \textbf{create} -- Create a new file with initial content.
+    \item \textbf{write} -- Overwrite the content of an existing file.
+    \item \textbf{delete} -- Mark a file as deleted and remove it from disk.
+    \item \textbf{rename} -- Rename a file (internally: delete old + create new).
+\end{itemize}
+
+\subsection{Properties}
+
+\begin{itemize}
+    \item \textbf{Eventual consistency:} All nodes converge to the same file state.
+    \item \textbf{Real storage:} Files are written to each node's local directory.
+    \item \textbf{Crash recovery:} Kafka replay rebuilds file state and disk contents.
+    \item \textbf{Leaderless:} Any node can perform any operation.
+    \item \textbf{Module reuse:} Kafka modules directly imported from Phase~2.
+\end{itemize}
+
+% ═══════════════════════════════════════════════════════════
+\section{Phase Comparison}
+
+\begin{table}[ht]
+\centering
+\begin{tabularx}{\textwidth}{lXXX}
+\toprule
+\textbf{Property} & \textbf{Phase 1} & \textbf{Phase 2} & \textbf{Phase 3} \\
+\midrule
+Data model & Events & Tree (CRDT) & Files on disk \\
+Logical clock & Vector Clock & Lamport Clock & Lamport Clock \\
+Consistency & Causal tracking & Eventual & Eventual \\
+Conflict resolution & -- & LWW (tree) & LWW (files) \\
+Durability & None & Kafka & Kafka \\
+Serialization & JSON & Protobuf & Protobuf \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Phase~1 provides the communication foundation with causal event tracking. Phase~2 adds a replicated data structure with convergence guarantees and Kafka durability. Phase~3 applies these primitives to a real-world file system.
+
+% ═══════════════════════════════════════════════════════════
+\section{Key Concepts}
+
+\subsection{Vector Clocks vs Lamport Clocks}
+
+\textbf{Lamport Clocks} maintain a single counter per node. They guarantee: if $a \to b$ then $L(a) < L(b)$. However, the converse is not true -- $L(a) < L(b)$ does not imply $a \to b$.
+
+\textbf{Vector Clocks} maintain one counter per node in the system. They provide a stronger guarantee: $VC(a) < VC(b)$ if and only if $a \to b$. This allows detecting concurrent events, which Lamport Clocks cannot do.
+
+Phase~1 uses Vector Clocks to demonstrate full causal tracking. Phases~2 and~3 use Lamport Clocks, which are sufficient for LWW conflict resolution.
+
+\subsection{CRDTs}
+
+Conflict-free Replicated Data Types guarantee convergence without coordination. Phase~2 uses a tree-move CRDT with cycle prevention. Phase~3 uses a simpler LWW-Register CRDT per file.
+
+\subsection{CAP Theorem}
+
+Phases~2 and~3 favor availability and partition tolerance (AP). All nodes can accept writes at all times and eventually converge, but there is no guarantee of reading the latest value immediately after a concurrent write on another node.
+
+% ═══════════════════════════════════════════════════════════
+\section{Test Scenarios}
+
+\subsection{Phase 1 -- Vector Clock Tests}
+
+\begin{enumerate}
+    \item \textbf{Tick:} Verify that local events increment the correct entry.
+    \item \textbf{Merge:} Verify pointwise maximum on receive.
+    \item \textbf{Happens-before:} Verify causal ordering detection.
+    \item \textbf{Concurrency:} Two independent events are correctly identified as concurrent.
+    \item \textbf{Causal chain:} $A \to B \to C$ transitivity is maintained.
+    \item \textbf{Three-node scenario:} Full send/receive/internal cycle across three nodes.
+\end{enumerate}
+
+\subsection{Phase 2 -- CRDT Tests}
+
+\begin{enumerate}
+    \item \textbf{Basic move:} Move a node to a new parent. Verify tree updates.
+    \item \textbf{Self-parent rejection:} Attempt to move a node under itself. Verify rejection.
+    \item \textbf{Cycle detection:} Move a parent under its descendant. Verify rejection.
+    \item \textbf{LWW ordering:} Conflicting moves with different timestamps. Higher timestamp wins.
+    \item \textbf{Out-of-order delivery:} Operations in reverse order. Verify convergence.
+    \item \textbf{Full convergence:} Same operations in all permutations produce the same tree.
+\end{enumerate}
+
+\subsection{Phase 3 -- File System Tests}
+
+\begin{enumerate}
+    \item \textbf{File creation:} Create on node~A. Verify on nodes~B and~C.
+    \item \textbf{File update:} Write on node~B. Verify propagation.
+    \item \textbf{File deletion:} Delete on node~C. Verify removal everywhere.
+    \item \textbf{Crash recovery:} Kill and restart a node. Verify Kafka replay.
+\end{enumerate}
+
+% ═══════════════════════════════════════════════════════════
+\section{Conclusion}
+
+This project progressively built a distributed system in three phases:
+
+\begin{enumerate}
+    \item \textbf{Phase 1} established ZeroMQ messaging with Vector Clocks for causal event tracking.
+    \item \textbf{Phase 2} introduced a replicated tree structure using CRDTs with Lamport timestamps and Kafka durability.
+    \item \textbf{Phase 3} applied the same primitives to a practical distributed file system with real disk storage.
+\end{enumerate}
+
+The progression from causal event tracking to replicated data structures to a practical file system demonstrates how distributed systems concepts build on each other.
+
+% ═══════════════════════════════════════════════════════════
+\newpage
+\begin{thebibliography}{9}
+
+\bibitem{lamport1978}
+    L.~Lamport,
+    ``Time, Clocks, and the Ordering of Events in a Distributed System,''
+    \textit{Comm.\ ACM}, vol.~21, no.~7, pp.~558--565, 1978.
+
+\bibitem{fidge1988}
+    C.~Fidge,
+    ``Timestamps in Message-Passing Systems That Preserve the Partial Ordering,''
+    \textit{Proc.\ 11th Australian Computer Science Conference}, pp.~56--66, 1988.
+
+\bibitem{shapiro2011}
+    M.~Shapiro, N.~Pregui\c{c}a, C.~Baquero, M.~Zawirski,
+    ``Conflict-free Replicated Data Types,''
+    \textit{SSS 2011}, pp.~386--400, 2011.
+
+\bibitem{brewer2000}
+    E.~Brewer,
+    ``Towards Robust Distributed Systems,''
+    \textit{PODC}, 2000.
+
+\bibitem{zmq}
+    ZeroMQ, \url{https://zeromq.org/}, 2024.
+
+\bibitem{kafka}
+    Apache Kafka, \url{https://kafka.apache.org/}, 2024.
+
+\bibitem{protobuf}
+    Protocol Buffers, \url{https://protobuf.dev/}, 2024.
+
+\end{thebibliography}
+
+\end{document}

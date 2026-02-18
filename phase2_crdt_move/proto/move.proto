@@ -1,0 +1,11 @@
+// phase2_crdt_move/proto/move.proto
+syntax = "proto3";
+
+message MoveEvent {
+  uint64 lamport = 1;
+  string replica_id = 2;
+  string new_parent = 3;
+  string meta = 4;
+  string child = 5;
+}
+

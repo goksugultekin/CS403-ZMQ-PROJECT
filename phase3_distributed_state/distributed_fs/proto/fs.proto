@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+enum FsOpType {
+    CREATE = 0;
+    WRITE  = 1;
+    DELETE = 2;
+    RENAME = 3;
+}
+
+message FsOperation {
+    FsOpType type       = 1;
+    string sender_id    = 2;
+    uint64 lamport      = 3;
+    string filename     = 4;
+    string content      = 5;
+    string new_filename = 6;  // only for RENAME
+}

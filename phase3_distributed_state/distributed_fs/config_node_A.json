@@ -1,0 +1,13 @@
+{
+  "id": "node_A",
+  "pub_port": 7000,
+  "peers": [
+    {"id": "node_B", "ip": "127.0.0.1", "pub_port": 7001},
+    {"id": "node_C", "ip": "127.0.0.1", "pub_port": 7002}
+  ],
+  "kafka": {
+    "brokers": "127.0.0.1:9092",
+    "topic": "fs-events"
+  },
+  "storage_dir": "storage_A"
+}

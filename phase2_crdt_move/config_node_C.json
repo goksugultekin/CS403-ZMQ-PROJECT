@@ -1,0 +1,12 @@
+{
+  "id": "node_C",
+  "pub_port": 6002,
+  "peers": [
+    {"id": "node_A", "ip": "127.0.0.1", "pub_port": 6000},
+    {"id": "node_B", "ip": "127.0.0.1", "pub_port": 6001}
+  ],
+  "kafka": {
+    "brokers": "127.0.0.1:9092",
+    "topic": "move-events"
+  }
+}

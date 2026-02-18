@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(python -m phase2_crdt_move.test_crdt:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
